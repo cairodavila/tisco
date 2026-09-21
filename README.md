@@ -1,54 +1,22 @@
+<div align="center">
+
 # tisco
 
-ask questions about video transcripts, inspect the evidence, then move or rename the clips from your terminal.
+**find the words. review the clips. approve the changes.**
 
-```text
-$ tisco ~/shoot
-◆  what now?
-│  which clips mention the price?
-◇  findings · 1 match · 1 review · 1 no match · 0 not judged
-│  MATCH    01-intro.MOV · match 0.93
-│    Transcript opening: “today i want to explain the price...”
-│  REVIEW   02-retake.MOV · match 0.50
-│  NO MATCH 03-detail.MOV · match 0.07
-●  find only · 1 selected match, 1 review candidate. no files changed.
-◆  what now?
-│  move the results into "price clips"
-◇  action preview · 2 ready · 1 unclear · 0 blocked · 0 skipped
-│  [x] CREATE price clips/
-│  [x] MOVE 01-intro.MOV → price clips/01-intro.MOV
-│  [ ] MOVE 02-retake.MOV → price clips/02-retake.MOV
-◆  apply these 2 actions? · 1 review row not included
-```
+ask questions about video transcripts, then organize the matching clips from your terminal.
 
-findings are not file operations. tisco shows what matched first, keeps uncertain clips unchecked, and asks again before changing a path.
+[![Node.js ≥22.13](https://img.shields.io/badge/Node.js-%E2%89%A522.13-417E38?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![OpenRouter](https://img.shields.io/badge/models-OpenRouter-6366F1?style=flat-square)](https://openrouter.ai/)
+[![MIT license](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](LICENSE)
 
-## install
+[quick start](#quick-start) · [how it works](#how-it-works) · [commands](#commands) · [privacy](#privacy) · [development](#development)
 
-requires Node 22.13 or newer.
+</div>
 
-```sh
-npm install -g @ailia/tisco
-tisco --check
-tisco ~/shoot
-```
+---
 
-`ffmpeg` and `ffprobe` are needed for new transcriptions and review exports. cached transcripts can still be searched without them.
-
-set `OPENROUTER_API_KEY`, or run `tisco --configure` for a masked prompt. tisco uses OpenRouter for both models:
-
-- `microsoft/mai-transcribe-2` transcribes speech
-- `typesafe/jev-1.13` answers typed questions about requests and transcripts
-
-## the loop
-
-1. tisco asks permission before scanning a directory.
-2. it reports which clips have transcripts and asks before uploading missing audio.
-3. you type a request in plain language.
-4. findings appear as `MATCH`, `REVIEW`, `NO MATCH`, or `NOT JUDGED`.
-5. if the request changes files, tisco shows every source and destination path before approval.
-
-use follow-up requests naturally:
+## from a question to a folder
 
 ```text
 which clips mention the warranty?
@@ -56,85 +24,170 @@ move the results into "warranty"
 rename the selected clips with _final
 ```
 
-`the results` includes review candidates, but they remain unchecked. `the selected clips` means the clips you explicitly selected or the confident matches from the last search.
+tisco searches what was said, shows the findings, and previews each path change. you can inspect the transcripts, change the names, or cancel before anything moves.
 
-## commands
+| find | inspect | organize |
+| :--- | :--- | :--- |
+| topics, names, lines, prepared takes, and verbal mistakes | match probabilities and full transcripts | move clips, rename files, and export review MP4s |
 
-| command | effect |
-| --- | --- |
-| `/results` | show every finding from the last search, locally |
-| `/details` | inspect probabilities, skipped checks, and the full transcript |
-| `/select` | choose findings explicitly; this changes selection, not files |
-| `/undo` | restore the latest applied move or rename |
-| `/export` | write review MP4s while preserving the sources |
-| `/transcribe` | transcribe selected clips |
-| `/context` | set project context read with later requests |
-| `/key` | replace the OpenRouter key for this session |
-| `/help`, `/quit` | show help or leave |
+> tisco reads transcripts, not pictures. it cannot judge focus, lighting, expressions, or recording quality.
+
+## quick start
+
+requires **Node.js 22.13+** and an **OpenRouter API key**. install `ffmpeg` and `ffprobe` for new transcriptions and review exports.
+
+```sh
+npm install -g @ailia/tisco
+
+tisco --configure   # enter your OpenRouter key in a masked prompt
+tisco --check       # check local media tools
+tisco ~/shoot       # open a shoot folder
+```
+
+you can also provide the key through `OPENROUTER_API_KEY`. cached transcripts can be searched without ffmpeg.
+
+on first use, tisco asks permission to scan the folder, then offers to transcribe clips that have no transcript. **audio uploads and new model requests are billed through OpenRouter.** declining transcription uploads nothing.
+
+<details>
+<summary>run from source</summary>
+
+```sh
+git clone https://github.com/cairodavila/tisco.git
+cd tisco
+pnpm install
+pnpm build
+node dist/cli.js ~/shoot
+```
+
+</details>
+
+## how it works
+
+### 1. ask about the clips
+
+type a request in plain language. tisco resolves which clips to search before judging their transcripts. an empty or stale selection never silently becomes the whole shoot.
+
+### 2. read the findings
+
+| finding | meaning | selected by default? |
+| :--- | :--- | :---: |
+| `MATCH` | probability at or above `0.80` | yes |
+| `REVIEW` | probability between `0.20` and `0.80` | no |
+| `NO MATCH` | probability at or below `0.20` | no |
+| `NOT JUDGED` | the check was skipped or could not be completed | no |
+
+use `/details` to inspect the probabilities, skipped checks, and full transcript. transcript openings are previews of the source words, not model-selected citations.
+
+### 3. approve the exact changes
+
+an action preview shows every source and destination path:
+
+```text
+[x] CREATE warranty/
+[x] MOVE 01-intro.MOV → warranty/01-intro.MOV
+[ ] MOVE 02-retake.MOV → warranty/02-retake.MOV
+```
+
+review candidates stay unchecked. edit the proposed names, choose individual rows, or cancel. only approval applies the plan; `/undo` can restore the original paths afterward.
+
+**follow-up scope matters:** “the results” includes review candidates without selecting them. “the selected clips” uses your explicit selection or the confident matches from the last search. `/select` changes that selection, not the files.
 
 ## naming
 
-folder and suffix suggestions are copied from your request, then validated and shown for editing.
+folder and suffix suggestions come from literal words in your request. quote multiword folder names:
 
 ```text
 put those into "approved picks"
 rename the selected clips with _review
 ```
 
-for full filename replacements, choose one of these in the rename prompt:
+| option | result |
+| :--- | :--- |
+| **append a suffix** | preserve the original name and add `_review` before the extension |
+| **numbered label** | names such as `01-price.MOV`, ordered by source path |
+| **transcript opening** | a number plus the first seven transcript words, normalized for filenames |
 
-- a suffix, preserving the existing stem and extension
-- numbered names such as `01-price.MOV`, sorted by source path
-- the first seven transcript words, normalized into a filename
+all proposed names are editable before approval. transcript openings are not generated summaries; missing words fall back to the original stem. extensions and transcript sidecars follow the video name. collisions are blocked, never automatically overwritten.
 
-transcript-based names are source openings, not generated summaries. missing words fall back to the original stem. extensions and transcript sidecars follow the video name. collisions stay blocked until you choose another name.
+## commands
 
-## what tisco can judge
+| command | what it does |
+| :--- | :--- |
+| `/results` | show every finding from the last search, locally |
+| `/details` | inspect probabilities, skipped checks, and the full transcript |
+| `/select` | choose findings without authorizing file changes |
+| `/undo` | restore the latest applied move or rename plan |
+| `/export` | write review MP4s while preserving the sources |
+| `/transcribe` | transcribe selected clips |
+| `/context` | set project context for later requests |
+| `/key` | replace the OpenRouter key for this session |
+| `/help` | show available commands |
+| `/quit` | leave the workspace |
 
-tisco judges what was said. it can find topics, names, lines, explanations, prepared takes, verbal mistakes, and repetition against a retained folder.
+## privacy
 
-it does not watch the picture or listen to recording quality. a request based only on framing, focus, expressions, lighting, noise, wind, duration, prior usage, or taste is refused with the missing evidence named. if a request mixes spoken content with one of those conditions, tisco judges the spoken part and says what it left out.
+| stays local | sent through OpenRouter |
+| :--- | :--- |
+| original videos, file operations, and undo journals | extracted audio when you approve transcription |
+| directory permissions and cached evidence | your request, project context, transcript text and timings, and reference transcripts for comparisons |
 
-probabilities at or above `0.80` are matches. values at or below `0.20` are non-matches. anything between them is a review candidate and starts unchecked.
+transcription uses **mono MP3 at no more than 16 kHz**, extracted locally. lower-rate audio is not upsampled. in one 19-clip test, 1.7 GB of video became 2.24 MB of uploaded audio.
 
-## safety and privacy
+only two models are used:
 
-- directory authorization is stored for that exact directory and can be revoked with `--forget-directory`
-- hidden directories and symlinks are skipped
-- audio upload needs confirmation; move and rename plans need a separate approval
-- source files are never deleted, edited in place, or overwritten
-- transcript sidecars move and rename with their videos
-- collisions and changed files block the affected action
-- every applied plan has a write-ahead journal in `.tisco/`
-- `/undo` verifies the files before restoring their original paths
-- the OpenRouter key is never printed, stored with media, or sent to a model as state
+- **`microsoft/mai-transcribe-2`** transcribes speech.
+- **`typesafe/jev-1.13`** returns typed judgments about requests and transcripts. code controls permissions, thresholds, paths, and file operations.
 
-for transcription, audio is extracted locally as mono MP3 at no more than 16 kHz. a lower-rate source is not upsampled. on the 19-clip test shoot, 1.7 GB of video became 2.24 MB of uploaded audio.
+the assembled decision state is capped at 55 KB and never silently truncated. the OpenRouter key is never printed, stored with media, or included in model state.
 
-Jev receives the request, project context, transcript text and timings, plus reference transcripts when the request asks for a comparison. the assembled decision state is capped at 55 KB and is never silently truncated.
+### file safety
+
+- directory permission applies to that exact directory; revoke it with `--forget-directory`.
+- hidden directories and symlinks are skipped.
+- uploads and file changes have separate approval steps.
+- source files are never deleted, edited in place, or overwritten.
+- sidecars move and rename with their videos.
+- collisions and changed files block the affected action.
+- every applied plan has a write-ahead journal in `.tisco/`; undo verifies files before restoring paths.
 
 ## limits
 
-- transcript evidence only; no picture or recording-quality analysis
-- no timestamped cuts or coverage audit
-- no PDF or DOCX briefing import; paste briefing text into `/context`
-- numbered names follow source-path order, not an inferred story order
-- transcript names use opening words, not semantic title generation
-- Portuguese and English have been exercised most; other languages are not yet measured
+spoken-content searches can cover topics, names, lines, explanations, prepared takes, verbal mistakes, and repetition against a retained folder.
 
-## develop
+requests that depend only on picture, recording quality, duration, prior usage, or taste are refused with the missing evidence named. for mixed requests, tisco judges the spoken part and says what it left out.
+
+also not supported:
+
+- timestamped cuts or coverage audits
+- PDF or DOCX briefing import; paste text into `/context` instead
+- inferred story order; numbered names follow source-path order
+- generated semantic titles; transcript names use opening words
+
+Portuguese and English have been exercised most. other languages are not yet measured.
+
+## development
 
 ```sh
 pnpm install
 pnpm test          # unit and integration tests, offline
-pnpm test:tui      # full terminal walkthrough, offline
-pnpm demo          # synthetic clips, mock transport, no key or network
-pnpm eval:wording  # paid live Jev wording checks
-pnpm eval:naming   # paid live naming and follow-up scope checks
+pnpm test:tui      # terminal walkthrough, offline
+pnpm demo          # synthetic clips; no key or network
 ```
 
-`tisco@0.3.0` passes 85 tests, with one optional footage test skipped when its fixture is absent. the terminal walkthrough covers authorization, findings, local detail inspection, uncertainty across follow-ups, editable names, action approval, and undo.
+<details>
+<summary>live model checks and test coverage</summary>
+
+these checks make paid OpenRouter requests:
+
+```sh
+pnpm eval:wording  # Jev wording checks
+pnpm eval:naming   # naming and follow-up scope checks
+```
+
+the `0.3.0` verification run had **84 passing tests and one optional footage test skipped**. the terminal walkthrough covers authorization, findings, local detail inspection, uncertainty across follow-ups, editable names, action approval, and undo.
+
+</details>
 
 ## license
 
-MIT
+[MIT](LICENSE)
