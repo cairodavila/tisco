@@ -144,7 +144,7 @@ export function referenceFromRoute(route: Answers, folders: string[]): string | 
   return folders[index] ?? null;
 }
 
-export type RouteScope = 'all_here' | 'root_only' | 'include_subfolders' | 'current_selection' | 'previous_result' | 'missing';
+export type RouteScope = 'all_here' | 'root_only' | 'include_subfolders' | 'current_selection' | 'previous_result' | `folder_${number}` | 'missing';
 
 export function scopeFromRoute(route: Answers): RouteScope {
   const answer = route.target_set;

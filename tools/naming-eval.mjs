@@ -15,6 +15,7 @@ const cases = [
   ['rename the selected clips with _review', undefined, '_review', 'current_selection'],
   ['rename the selected clips with descriptive names', undefined, undefined, 'current_selection'],
   ['put those into "client/selects"', 'client/selects', undefined, 'previous_result'],
+  ['from the falas folder, which clips have incomplete sentences?', undefined, undefined, 'folder_0'],
 ];
 let failures = 0;
 for (const [request, folder, suffix, scope] of cases) {

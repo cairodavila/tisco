@@ -79,3 +79,12 @@ test('empty and stale follow-up scopes never widen to the entire folder', () => 
   assert.deepEqual(resolveScope([clip], 'missing', state).candidates, []);
   assert.deepEqual(resolveScope([clip], 'all_here', state).candidates, [clip]);
 });
+
+test('a named source folder scopes clips to that folder and its descendants', () => {
+  const clips = [clip, { ...clip, path: 'broll/B.MOV' }, { ...clip, path: 'falas/A.MOV' }, { ...clip, path: 'falas/closeups/B.MOV' }];
+  const state = { selection: [], lastResult: [] };
+  const scoped = resolveScope(clips, 'folder_1', state);
+  assert.deepEqual(scoped.candidates.map(item => item.path), ['falas/A.MOV', 'falas/closeups/B.MOV']);
+  assert.match(scoped.from, /falas/);
+  assert.deepEqual(resolveScope(clips, 'folder_99', state).candidates, []);
+});

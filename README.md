@@ -65,7 +65,13 @@ node dist/cli.js ~/shoot
 
 ### 1. ask about the clips
 
-type a request in plain language. tisco resolves which clips to search before judging their transcripts. an empty or stale selection never silently becomes the whole shoot.
+type a request in plain language. tisco resolves which clips to search before judging their transcripts. name an existing source folder when you want to limit the search:
+
+```text
+from the "relevant videos" folder, which clips contain incomplete sentences?
+```
+
+Jev chooses among the folders tisco actually found; it does not invent a path. folders mentioned only as destinations are kept separate. an empty or stale selection never silently becomes the whole shoot.
 
 ### 2. read the findings
 
@@ -184,7 +190,7 @@ pnpm eval:wording  # Jev wording checks
 pnpm eval:naming   # naming and follow-up scope checks
 ```
 
-the `0.3.0` verification run had **84 passing tests and one optional footage test skipped**. the terminal walkthrough covers authorization, findings, local detail inspection, uncertainty across follow-ups, editable names, action approval, and undo.
+the `0.3.1` verification run had **85 passing tests and one optional footage test skipped**. the terminal walkthrough covers authorization, findings, local detail inspection, uncertainty across follow-ups, editable names, action approval, and undo.
 
 </details>
 

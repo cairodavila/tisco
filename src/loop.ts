@@ -160,6 +160,10 @@ export function resolveScope(clips: Clip[], scope: string, state: SessionState):
   if (scope === 'include_subfolders') return { candidates: clips, from: 'clips here and in subfolders' };
   if (scope === 'current_selection') return { candidates: clips.filter(clip => state.selection.includes(clip.path)), from: 'the current selection' };
   if (scope === 'previous_result') return { candidates: clips.filter(clip => state.lastResult.includes(clip.path)), from: 'the previous result (review rows still need approval)' };
+  if (/^folder_\d+$/.test(scope)) {
+    const folder = foldersIn(clips)[Number(scope.slice('folder_'.length))];
+    if (folder) return { candidates: clips.filter(clip => inFolder(clip.path, folder)), from: `the named folder ${JSON.stringify(folder)}` };
+  }
   return { candidates: [], from: 'an unresolved scope' };
 }
 

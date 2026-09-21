@@ -44,6 +44,9 @@ test('route specs fan out independent operation, scope and feasibility questions
   for (const id of ['ops_find', 'ops_create', 'ops_move', 'ops_rename', 'ops_extract', 'criterion_requested', 'target_set', 'reference_set', ...feasibility]) assert.ok(ids.includes(id), id);
   assert.deepEqual(ids.filter(id => id === 'reference_set'), ['reference_set']);
   assert.equal(routeSpecs([]).some(s => s.id === 'reference_set'), false, 'no folders means no reference question');
+  const target = routeSpecs(['broll', 'falas']).find(s => s.id === 'target_set').question;
+  assert.match(target.criteria.folder_0, /broll/);
+  assert.match(target.criteria.folder_1, /falas/);
   const asked = admitted(routeSpecs(['falas']), {});
   assert.equal(asked.some(s => s.id === 'ops_extract'), false);
   for (const id of feasibility) assert.ok(asked.some(s => s.id === id), `${id} is speculative, not a dependent round`);
@@ -55,6 +58,7 @@ test('route answers drive scope, reference and preset', () => {
   assert.equal(referenceFromRoute(pick('reference_set', 'none'), folders), null);
   assert.equal(referenceFromRoute(pick('reference_set', 'folder_1'), folders), 'broll');
   assert.equal(scopeFromRoute(pick('target_set', 'root_only')), 'root_only');
+  assert.equal(scopeFromRoute(pick('target_set', 'folder_1')), 'folder_1');
   assert.equal(scopeFromRoute({}), 'missing');
   assert.equal(modeFromRoute(a('criterion_requested', 0.1), null), 'all');
   assert.equal(modeFromRoute(a('criterion_requested', 0.9), null), 'custom');

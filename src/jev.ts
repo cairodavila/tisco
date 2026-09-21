@@ -68,13 +68,14 @@ export function routeQuestion(id: string, folders: string[]): Question {
       'No part depends on outside history or personal taste.');
     case 'target_set': return {
       type: 'choice',
-      instructions: 'Which clips does the user want this done to? Choose all_here when the user describes a condition applied to the folder, says all or every clip, or names no particular set. References such as "them" within the same find-and-move instruction refer to the clips identified in that instruction, not earlier results. Choose previous_result or current_selection only when referring back to an earlier result or an existing selection. Choose missing only when the text cannot be understood at all.',
+      instructions: 'Which existing set supplies the input clips? Choose a listed folder when the user says to search, find, or work from that folder. Do not choose a folder mentioned only as a destination after words such as into or to. Choose all_here when the user describes a condition applied to the current folder, says all or every clip, or names no particular set. References such as "them" within the same find-and-move instruction refer to the clips identified in that instruction, not earlier results. Choose previous_result or current_selection only when referring back to an earlier result or an existing selection. Choose missing only when the text cannot be understood at all.',
       criteria: {
-        all_here: 'Every eligible clip in this folder, or every clip matching the condition the user described.',
+        all_here: 'Every eligible clip in the current folder, or every clip matching the condition the user described.',
         root_only: 'Only clips at the top level, leaving subfolders alone.',
-        include_subfolders: 'Clips in this folder and in its subfolders.',
+        include_subfolders: 'Clips in the current folder and in all of its subfolders.',
         current_selection: 'Only the explicitly selected clips: "the selection", "selected clips", "os selecionados".',
         previous_result: 'The clips produced by the previous request: "the results", "those", "them", "esses", "os resultados". This set can still include uncertain candidates.',
+        ...Object.fromEntries(folders.map((folder, index) => [`folder_${index}`, `Only clips already inside the existing folder ${JSON.stringify(folder)}, including its subfolders. This folder is the source scope, not a destination.`])),
         missing: 'The text cannot be understood well enough to say.',
       },
     };
