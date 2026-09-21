@@ -1,8 +1,9 @@
 import * as path from 'node:path';
 import * as ui from '@clack/prompts';
 import { Workspace, inFolder, validateFolder } from './workspace.js';
-import { JEV_MODEL, OpenRouter } from './openrouter.js';
-import { analyzeClip, answerLabel, clipQuestionIds, clipQuestionSignature, feasibilityFromRoute, modeFromRoute, recommend, referenceFromRoute, routeRequest, routeYes, scopeFromRoute } from './decisions.js';
+import { JEV_MODEL, MAX_DECISION_BYTES, MAX_STATE_BYTES, OpenRouter } from './openrouter.js';
+import { answerLabel, clipQuestionIds, feasibilityFromRoute, folderRelationBatch, folderSuggestion, modeFromRoute, recommend, referenceFromRoute, routeYes, scopeFromRoute, workspaceDecisions, workspaceQuestionBatch, workspaceRouteRequest } from './decisions.js';
+import type { ClipOptions, WorkspaceQuestionBatch } from './decisions.js';
 import { buildPlan, executePlan, validateSuffix } from './plan.js';
 import { chosenName, namingCandidates, suggestedStem, transcriptText, validateStem } from './naming.js';
 import { findingLabel, findingLines, findingSummary } from './findings.js';
@@ -11,6 +12,8 @@ import { approveReady, approveWithDependencies, blockedActions, blockedReason, e
 import { cachedTranscript, checkMediaTools, exportReview, hostCapabilities, importAssemblyAI, transcribeClip } from './media.js';
 import { ask, confirm, errorMessage, input, Cancelled } from './ask.js';
 import { safeDisplay } from './types.js';
+import { workspaceDigest, workspaceProjection, workspaceSnapshot, workspaceState } from './workspace-state.js';
+import type { WorkspaceSnapshot, WorkspaceStateOptions } from './workspace-state.js';
 import type { Clip, Decision, Evidence, Mode, Rule, Unjudgeable } from './types.js';
 import type { Plan, PlanAction } from './actions.js';
 import type { PlanIntent, RenameSpec } from './plan.js';
@@ -154,22 +157,21 @@ function defaultFolder(mode: Mode): string {
   return 'falas';
 }
 
-export function resolveScope(clips: Clip[], scope: string, state: SessionState): { candidates: Clip[]; from: string } {
+export function resolveScope(clips: Clip[], scope: string, state: SessionState, folders = foldersIn(clips)): { candidates: Clip[]; from: string } {
   const topLevel = clips.filter(clip => !clip.path.includes('/'));
   if (scope === 'all_here' || scope === 'root_only') return { candidates: topLevel, from: 'clips directly in this folder' };
   if (scope === 'include_subfolders') return { candidates: clips, from: 'clips here and in subfolders' };
   if (scope === 'current_selection') return { candidates: clips.filter(clip => state.selection.includes(clip.path)), from: 'the current selection' };
   if (scope === 'previous_result') return { candidates: clips.filter(clip => state.lastResult.includes(clip.path)), from: 'the previous result (review rows still need approval)' };
   if (/^folder_\d+$/.test(scope)) {
-    const folder = foldersIn(clips)[Number(scope.slice('folder_'.length))];
+    const folder = folders[Number(scope.slice('folder_'.length))];
     if (folder) return { candidates: clips.filter(clip => inFolder(clip.path, folder)), from: `the named folder ${JSON.stringify(folder)}` };
   }
   return { candidates: [], from: 'an unresolved scope' };
 }
 
-async function interpretRequest(client: OpenRouter, request: string, clips: Clip[]): Promise<Interpretation> {
-  const folders = foldersIn(clips);
-  const route = await routeRequest(client, request, folders, clips.length);
+async function interpretRequest(client: OpenRouter, request: string, folders: string[], state: Record<string, unknown>): Promise<Interpretation> {
+  const route = await workspaceRouteRequest(client, state, request, folders);
   const operations = Object.fromEntries(OPERATIONS.map(op => [op, routeYes(route, `ops_${op}`)])) as Record<Op, boolean>;
   const reference = referenceFromRoute(route, folders);
   const feasibility = feasibilityFromRoute(route);
@@ -317,14 +319,120 @@ async function editNames(intent: PlanIntent): Promise<void> {
   }
 }
 
+interface WorkspaceDecisionBatch {
+  questions: WorkspaceQuestionBatch;
+  state: Record<string, unknown>;
+}
+
+function fitsDecision(state: Record<string, unknown>, questions: WorkspaceQuestionBatch['questions']): boolean {
+  return Buffer.byteLength(JSON.stringify(state)) <= MAX_STATE_BYTES &&
+    Buffer.byteLength(JSON.stringify({ model: JEV_MODEL, state, questions })) <= MAX_DECISION_BYTES;
+}
+
+export function workspaceDecisionBatches(snapshot: WorkspaceSnapshot, paths: string[], rule: Rule, options: ClipOptions, stateOptions: WorkspaceStateOptions): WorkspaceDecisionBatch[] {
+  const prepare = (selected: string[], detailed: Set<string>, complete: boolean): WorkspaceDecisionBatch => {
+    const projected = complete ? snapshot : workspaceProjection(snapshot, detailed);
+    const state = workspaceState(projected, {
+      ...stateOptions,
+      manifestOnlyVideos: complete ? [] : snapshot.videos.filter(video => !detailed.has(video.path)).map(video => video.path),
+    });
+    return { questions: workspaceQuestionBatch(projected, selected, rule, options), state };
+  };
+  const full = prepare(paths, new Set(snapshot.videos.map(video => video.path)), true);
+  if (fitsDecision(full.state, full.questions.questions)) return [full];
+
+  const byId = new Map(snapshot.videos.map(video => [video.id, video.path]));
+  const referencePaths = new Set(snapshot.folders.find(folder => folder.path === stateOptions.referenceFolder)?.all_videos.map(id => byId.get(id)!).filter(Boolean) ?? []);
+  const batches: WorkspaceDecisionBatch[] = [];
+  let selected: string[] = [];
+  for (const path of paths) {
+    const trial = [...selected, path];
+    const detailed = new Set([...referencePaths, ...trial]);
+    const candidate = prepare(trial, detailed, false);
+    if (fitsDecision(candidate.state, candidate.questions.questions)) { selected = trial; continue; }
+    if (!selected.length) throw new Error(`Transcript evidence for ${path} cannot fit in one Jev request; nothing was truncated.`);
+    const previousDetails = new Set([...referencePaths, ...selected]);
+    batches.push(prepare(selected, previousDetails, false));
+    selected = [path];
+    const singleDetails = new Set([...referencePaths, path]);
+    const single = prepare(selected, singleDetails, false);
+    if (!fitsDecision(single.state, single.questions.questions)) throw new Error(`Transcript evidence for ${path} cannot fit in one Jev request; nothing was truncated.`);
+  }
+  if (selected.length) batches.push(prepare(selected, new Set([...referencePaths, ...selected]), false));
+  return batches;
+}
+
+interface PreparedFolderRelation {
+  batch: ReturnType<typeof folderRelationBatch>;
+  state: Record<string, unknown>;
+}
+
+function prepareFolderRelation(snapshot: WorkspaceSnapshot, selectedPaths: string[], folders: string[], stateOptions: WorkspaceStateOptions, complete: boolean): PreparedFolderRelation {
+  const byId = new Map(snapshot.videos.map(video => [video.id, video.path]));
+  const detailed = new Set(selectedPaths);
+  for (const folder of snapshot.folders.filter(item => folders.includes(item.path))) {
+    for (const id of folder.all_videos) {
+      const path = byId.get(id);
+      if (path) detailed.add(path);
+    }
+  }
+  const projected = complete ? snapshot : workspaceProjection(snapshot, detailed);
+  return {
+    batch: folderRelationBatch(projected, selectedPaths, folders),
+    state: workspaceState(projected, {
+      ...stateOptions,
+      selectedVideos: selectedPaths,
+      manifestOnlyVideos: complete ? [] : snapshot.videos.filter(video => !detailed.has(video.path)).map(video => video.path),
+    }),
+  };
+}
+
+export async function suggestRelatedFolder(client: Pick<OpenRouter, 'decide'>, snapshot: WorkspaceSnapshot, selectedPaths: string[], stateOptions: WorkspaceStateOptions): Promise<ReturnType<typeof folderSuggestion>> {
+  const all = folderRelationBatch(snapshot, selectedPaths);
+  if (!all.folders.length) return undefined;
+  const full = prepareFolderRelation(snapshot, selectedPaths, all.folders, stateOptions, true);
+  if (fitsDecision(full.state, full.batch.questions)) return folderSuggestion(full.batch, await client.decide(full.state, full.batch.questions));
+
+  const scores: { folder: string; probability: number }[] = [];
+  for (const folder of all.folders) {
+    const request = prepareFolderRelation(snapshot, selectedPaths, [folder], stateOptions, false);
+    if (!fitsDecision(request.state, request.batch.questions)) throw new Error(`The selected clips and ${folder} cannot fit in one Jev folder comparison; nothing was truncated.`);
+    const answers = await client.decide(request.state, request.batch.questions);
+    const relation = answers.folder_0_related;
+    scores.push({ folder, probability: relation?.type === 'noul' ? relation.noul : 0 });
+  }
+  let shortlist = scores.filter(item => item.probability >= 0.2).sort((a, b) => b.probability - a.probability).slice(0, 8).map(item => item.folder);
+  if (!shortlist.length) shortlist = [scores.sort((a, b) => b.probability - a.probability)[0]!.folder];
+  while (shortlist.length) {
+    const request = prepareFolderRelation(snapshot, selectedPaths, shortlist, stateOptions, false);
+    if (fitsDecision(request.state, request.batch.questions)) return folderSuggestion(request.batch, await client.decide(request.state, request.batch.questions));
+    shortlist.pop();
+  }
+  return undefined;
+}
+
 async function oneRequest(request: string, deps: LoopDeps, state: SessionState): Promise<void> {
-  const clips = await deps.workspace.scan();
+  const inventory = await deps.workspace.inventory();
+  const clips = inventory.clips;
   if (!clips.length) { ui.log.warn('No eligible videos in this directory.'); return; }
   const client = await deps.getClient();
+  let evidence = await loadEvidence(deps.workspace, clips);
+  let snapshot = workspaceSnapshot(inventory, evidence);
+  const routeFolders = snapshot.folders.filter(folder => folder.path !== '.' && folder.all_videos.length).map(folder => folder.path);
+  const stateOptions = {
+    instruction: request,
+    projectContext: deps.getContext(),
+    session: { selection: state.selection, previousResult: state.lastResult, uncertain: state.uncertain },
+  };
+  let routeState = workspaceState(snapshot, stateOptions);
+  if (Buffer.byteLength(JSON.stringify(routeState)) > MAX_STATE_BYTES) {
+    const manifestOnlyVideos = snapshot.videos.filter(video => video.transcript.status !== 'missing').map(video => video.path);
+    routeState = workspaceState(workspaceProjection(snapshot, []), { ...stateOptions, manifestOnlyVideos });
+  }
   const spin = ui.spinner();
-  spin.start('Reading the request with Jev');
+  spin.start('Reading the request and workspace with Jev');
   let view: Interpretation;
-  try { view = await interpretRequest(client, request, clips); }
+  try { view = await interpretRequest(client, request, routeFolders, routeState); }
   finally { spin.stop('Request interpreted'); }
 
   const ops = OPERATIONS.filter(op => view.operations[op]);
@@ -343,7 +451,7 @@ async function oneRequest(request: string, deps: LoopDeps, state: SessionState):
   }
   if (limit) ui.log.info(`Part of this request asks for ${limit}. I judge what was said and leave those parts out.`);
 
-  const scoped = resolveScope(clips, view.scope, state);
+  const scoped = resolveScope(clips, view.scope, state, routeFolders);
   let targets = scoped.candidates;
   const followup = view.scope === 'current_selection' || view.scope === 'previous_result';
   if (!targets.length && followup) { ui.log.warn('That selection is empty or no longer exists. Nothing was retargeted. Ask for clips in this folder, or use /select.'); return; }
@@ -355,37 +463,52 @@ async function oneRequest(request: string, deps: LoopDeps, state: SessionState):
   const inheritedUncertainty = followup ? state.uncertain : [];
   let selection: { clip: Clip; preselected: boolean }[] = targets.map(clip => ({ clip, preselected: !inheritedUncertainty.includes(clip.path) }));
   if (view.criterion || view.mode !== 'all') {
-    const references = view.reference ? clips.filter(clip => inFolder(clip.path, view.reference ?? '')) : [];
-    const evidence = await ensureTranscripts(deps.workspace, [...targets, ...references], deps.getClient, deps.getContext());
+    evidence = await ensureTranscripts(deps.workspace, clips, deps.getClient, deps.getContext());
+    snapshot = workspaceSnapshot(inventory, evidence);
     const targetEvidence = evidence.filter(item => targets.some(clip => clip.path === item.clip.path));
-    const referenceEvidence = evidence.filter(item => references.some(clip => clip.path === item.clip.path));
+    const references = view.reference ? clips.filter(clip => inFolder(clip.path, view.reference ?? '')) : [];
     const rule: Rule = { request, context: deps.getContext(), mode: view.mode, destination: '', reference: view.reference, threshold: 0.8, extra: [], unjudgeable: view.aspects };
     const options = { hasCriterion: view.criterion, hasReference: references.length > 0 };
     const questionIds = clipQuestionIds(rule, options);
-    const questionSignature = clipQuestionSignature(rule, options);
-    const referenceKeys = referenceEvidence.map(item => ({ path: item.clip.path, ...item.transcript.source }));
+    const digest = workspaceDigest(snapshot);
     const decisions: Decision[] = [];
+    const keys = new Map<string, string>();
+    const missing: string[] = [];
     let reused = 0;
-    const judge = ui.spinner();
-    judge.start('Judging clips · only the questions their gates admit');
-    try {
-      // Keep one clip per Jev state to avoid context rot, but overlap four independent
-      // requests so a real shoot does not wait one network round trip per clip.
-      for (let start = 0; start < targetEvidence.length; start += 4) {
-        const batch = targetEvidence.slice(start, start + 4);
-        judge.message(`${start + 1}-${start + batch.length}/${targetEvidence.length}`);
-        decisions.push(...await Promise.all(batch.map(async item => {
-          try {
-            const key = decisionKey({ model: JEV_MODEL, request, context: rule.context, mode: rule.mode, reference: rule.reference, unjudgeable: rule.unjudgeable, questions: questionIds, questionSignature, clip: { path: item.clip.path, ...item.transcript.source }, references: referenceKeys });
-            const stored = await cachedDecision(deps.workspace, key);
-            if (stored) { reused += 1; return { ...stored, ...recommend(stored.answers, rule), path: item.clip.path }; }
-            const decision = await analyzeClip(client, item, referenceEvidence, rule, options);
-            await saveDecision(deps.workspace, key, decision);
-            return decision;
-          } catch (error) { return { path: item.clip.path, answers: {}, recommendation: 'review', reason: 'Not judged.', error: errorMessage(error) } as Decision; }
-        })));
+    for (const item of targetEvidence) {
+      if (view.reference && inFolder(item.clip.path, view.reference)) {
+        decisions.push({ path: item.clip.path, answers: {}, recommendation: 'review', reason: 'Not judged.', error: 'A retained reference cannot also be a move target.' });
+        continue;
       }
-    } finally { judge.stop(`${decisions.length} clip(s) judged${reused ? ` · ${reused} reused from cache` : ''}`); }
+      const questionSignature = JSON.stringify(workspaceQuestionBatch(snapshot, [item.clip.path], rule, options).questions);
+      const key = decisionKey({ model: JEV_MODEL, request, context: rule.context, mode: rule.mode, reference: rule.reference, unjudgeable: rule.unjudgeable, questions: questionIds, questionSignature, workspace: digest, clip: { path: item.clip.path, ...item.transcript.source }, references: [] });
+      keys.set(item.clip.path, key);
+      const stored = await cachedDecision(deps.workspace, key);
+      if (stored) { reused += 1; decisions.push({ ...stored, ...recommend(stored.answers, rule), path: item.clip.path }); }
+      else missing.push(item.clip.path);
+    }
+    const judge = ui.spinner();
+    judge.start(`Judging shared workspace · ${missing.length} clip(s)`);
+    try {
+      if (missing.length) {
+        const batches = workspaceDecisionBatches(snapshot, missing, rule, options, {
+          ...stateOptions,
+          referenceFolder: view.reference,
+          unjudgeable: view.aspects,
+        });
+        for (const [index, batch] of batches.entries()) {
+          judge.message(`Workspace evidence ${index + 1}/${batches.length} · ${batch.questions.entries.length} clip(s)`);
+          try {
+            const fresh = workspaceDecisions(batch.questions, await client.decide(batch.state, batch.questions.questions), rule);
+            decisions.push(...fresh);
+            for (const decision of fresh) await saveDecision(deps.workspace, keys.get(decision.path)!, decision);
+          } catch (error) {
+            decisions.push(...batch.questions.entries.map(entry => ({ path: entry.path, answers: {}, recommendation: 'review' as const, reason: 'Not judged.', error: errorMessage(error) })));
+          }
+        }
+      }
+    } finally { judge.stop(`${decisions.length} clip(s) judged in shared workspace state${reused ? ` · ${reused} reused from cache` : ''}`); }
+    decisions.sort((a, b) => targets.findIndex(clip => clip.path === a.path) - targets.findIndex(clip => clip.path === b.path));
     for (const decision of decisions) {
       if (decision.recommendation === 'propose' && inheritedUncertainty.includes(decision.path)) {
         decision.recommendation = 'review';
@@ -420,8 +543,27 @@ async function oneRequest(request: string, deps: LoopDeps, state: SessionState):
 
   let folder: string | undefined;
   if (view.operations.move || view.operations.create) {
-    ui.log.info(view.folder ? `Folder from your request: ${safeDisplay(view.folder)}` : 'No exact folder name identified; showing a default you can replace. Quote multiword names for best results.');
-    folder = await destination(view.folder ?? defaultFolder(view.mode));
+    let relatedFolder: string | undefined;
+    if (view.operations.move && !view.folder) {
+      if (snapshot.videos.some(video => video.transcript.status === 'missing')) {
+        evidence = await ensureTranscripts(deps.workspace, clips, deps.getClient, deps.getContext());
+        snapshot = workspaceSnapshot(inventory, evidence);
+      }
+      const selectedVideos = selection.filter(entry => entry.preselected).map(entry => entry.clip.path);
+      const relationTargets = selectedVideos.length ? selectedVideos : selection.map(entry => entry.clip.path);
+      if (folderRelationBatch(snapshot, relationTargets).folders.length) {
+        const relationSpin = ui.spinner();
+        relationSpin.start('Comparing selected clips with existing folders');
+        try {
+          const suggestion = await suggestRelatedFolder(client, snapshot, relationTargets, stateOptions);
+          relatedFolder = suggestion?.folder;
+          if (suggestion) ui.log.info(`Existing folder suggested from workspace evidence: ${safeDisplay(suggestion.folder)} · choice ${suggestion.choiceProbability.toFixed(2)} · relation ${suggestion.relationProbability.toFixed(2)}`);
+        } catch (error) { ui.log.warn(`Folder relation was not used: ${errorMessage(error)}`); }
+        finally { relationSpin.stop(relatedFolder ? 'Existing folder found' : 'No confident existing-folder fit'); }
+      }
+    }
+    ui.log.info(view.folder ? `Folder from your request: ${safeDisplay(view.folder)}` : relatedFolder ? 'The suggested existing folder is editable before any action.' : 'No exact or confidently related folder identified; showing an editable default.');
+    folder = await destination(view.folder ?? relatedFolder ?? defaultFolder(view.mode));
   }
   const rename = view.operations.rename ? await chooseRename(deps.workspace, selection.map(entry => entry.clip), view.suffix) : undefined;
   const intent: PlanIntent = { clips: view.operations.move || view.operations.rename ? selection : [], folder, rename };

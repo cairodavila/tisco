@@ -73,6 +73,8 @@ from the "relevant videos" folder, which clips contain incomplete sentences?
 
 Jev chooses among the folders tisco actually found; it does not invent a path. folders mentioned only as destinations are kept separate. an empty or stale selection never silently becomes the whole shoot.
 
+Jev judges against the whole workspace, not one clip in isolation: the directory structure, folder membership, transcripts, earlier findings, and your selections travel in one shared state, and a clip's questions are answered in a single batch against it.
+
 ### 2. read the findings
 
 | finding | meaning | selected by default? |
@@ -144,7 +146,7 @@ only two models are used:
 - **`microsoft/mai-transcribe-2`** transcribes speech.
 - **`typesafe/jev-1.13`** returns typed judgments about requests and transcripts. code controls permissions, thresholds, paths, and file operations.
 
-the assembled decision state is capped at 55 KB and never silently truncated. the OpenRouter key is never printed, stored with media, or included in model state.
+the workspace state sent to Jev is capped at 96 KB and never silently truncated. when a workspace exceeds it, the state is split deterministically into batches and merged back into the same per-clip decisions. the OpenRouter key is never printed, stored with media, or included in model state.
 
 ### file safety
 
@@ -190,7 +192,7 @@ pnpm eval:wording  # Jev wording checks
 pnpm eval:naming   # naming and follow-up scope checks
 ```
 
-the `0.3.1` verification run had **85 passing tests and one optional footage test skipped**. the terminal walkthrough covers authorization, findings, local detail inspection, uncertainty across follow-ups, editable names, action approval, and undo.
+the `0.4.0` verification run had **92 passing tests and one optional footage test skipped**. the terminal walkthrough covers authorization, findings, local detail inspection, uncertainty across follow-ups, editable names, action approval, and undo.
 
 </details>
 

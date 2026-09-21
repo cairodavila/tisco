@@ -20,6 +20,8 @@ export interface DecisionKeyParts {
   unjudgeable?: string[];
   questions: string[];
   questionSignature: string;
+  /** Full directory paths, folder membership, and transcript evidence seen by Jev. */
+  workspace?: string;
   clip: Transcript;
   references: Transcript[];
 }

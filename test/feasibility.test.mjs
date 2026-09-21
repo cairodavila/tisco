@@ -4,20 +4,22 @@ import {
   ASPECT_QUESTIONS,
   clipQuestionIds,
   clipSpecs,
-  clipState,
   feasibilityFromRoute,
-  routeRequest,
   routeSpecs,
+  workspaceQuestionBatch,
+  workspaceRouteRequest,
 } from '../dist/decisions.js';
 import { admitted, report } from '../dist/gates.js';
-import { clipState as wireClipState } from '../dist/jev.js';
+import { workspaceSnapshot, workspaceState } from '../dist/workspace-state.js';
 
 const folders = [];
 const source = { path: 'a.mov', size: 1, mtimeMs: 1, ino: 1, dev: 1 };
+const clip = { path: 'a.mov', fingerprint: source };
 const evidence = {
-  clip: { path: 'a.mov', fingerprint: source },
-  transcript: { path: 'a.mov', prompt: '', status: 'complete', timing: 'word', text: 'ok', words: [], source },
+  clip,
+  transcript: { version: 1, model: 'stt', source, prompt: '', timeUnit: 'ms', status: 'complete', timing: 'word', text: 'ok', words: [], segments: [], durationMs: 1, cost: 0 },
 };
+const requestState = request => workspaceState(workspaceSnapshot({ clips: [clip], folders }, [evidence]), { instruction: request, projectContext: '', session: { selection: [], previousResult: [], uncertain: [] } });
 const noul = value => ({ type: 'noul', noul: value });
 const aspectIds = Object.values(ASPECT_QUESTIONS);
 
@@ -56,16 +58,19 @@ const routeAnswers = {
 
 test('route uses one speculative fan-out call, including feasibility', async () => {
   const client = stub(routeAnswers);
-  const answers = await routeRequest(client, 'find the clips where they explain the price', folders, 3);
+  const request = 'find the clips where they explain the price';
+  const answers = await workspaceRouteRequest(client, requestState(request), request, folders);
   assert.equal(client.calls.length, 1);
   for (const id of ['spoken_content_decides', ...aspectIds]) assert.ok(client.calls[0].ids.includes(id), id);
-  assert.deepEqual(Object.keys(client.calls[0].state).sort(), ['instruction', 'inventory']);
+  assert.ok(client.calls[0].state.workspace);
+  assert.equal(client.calls[0].state.instruction, request);
   assert.equal(answers.spoken_content_decides.noul, 0.95);
 });
 
 test('an unfiltered request still uses one route call and leaves relevance to code', async () => {
   const client = stub({ ...routeAnswers, ops_find: 0.05, criterion_requested: 0.05 });
-  await routeRequest(client, 'move every clip into selects', folders, 3);
+  const request = 'move every clip into selects';
+  await workspaceRouteRequest(client, requestState(request), request, folders);
   assert.equal(client.calls.length, 1);
   for (const id of aspectIds) assert.ok(client.calls[0].ids.includes(id), id);
 });
@@ -111,10 +116,11 @@ test('set-aside parts travel with only the question that needs them', () => {
   const asked = admitted(clipSpecs(rule, options), {}).filter(spec => spec.tier === 1);
   assert.deepEqual(asked.filter(spec => spec.consumes.includes('unjudgeable')).map(spec => spec.id), ['matches_request']);
   assert.equal(clipQuestionIds(rule, options).length, asked.length);
-  const consumes = asked.flatMap(spec => spec.consumes);
-  assert.ok(!('unjudgeable' in clipState(evidence, [], rule, consumes)));
-  const mixed = clipState(evidence, [], { ...rule, unjudgeable: ['picture', 'sound'] }, consumes);
+  const snapshot = workspaceSnapshot({ clips: [clip], folders }, [evidence]);
+  const batch = workspaceQuestionBatch(snapshot, [clip.path], rule, options);
+  const matchQuestion = batch.questions.video_0__matches_request;
+  assert.match(matchQuestion.instructions, /unjudgeable/);
+  assert.ok(!('unjudgeable' in workspaceState(snapshot, { instruction: rule.request, projectContext: '', session: { selection: [], previousResult: [], uncertain: [] } })));
+  const mixed = workspaceState(snapshot, { instruction: rule.request, projectContext: '', session: { selection: [], previousResult: [], uncertain: [] }, unjudgeable: ['picture', 'sound'] });
   assert.deepEqual(mixed.unjudgeable, ['picture', 'sound']);
-  assert.deepEqual(wireClipState(rule.request, '', {}, [], ['picture', 'sound']).unjudgeable, ['picture', 'sound']);
-  assert.ok(!('unjudgeable' in wireClipState(rule.request, '', {}, [])));
 });

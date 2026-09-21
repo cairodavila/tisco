@@ -4,7 +4,8 @@ import { namingCandidates, chosenName, suggestedStem, validateStem } from '../di
 import { namingQuestions } from '../dist/jev.js';
 import { findingLabel, findingLines, findingSummary } from '../dist/findings.js';
 import { resolveScope } from '../dist/loop.js';
-import { routeRequest } from '../dist/decisions.js';
+import { workspaceRouteRequest } from '../dist/decisions.js';
+import { workspaceSnapshot, workspaceState } from '../dist/workspace-state.js';
 
 const clip = { path: 'A001.MOV', fingerprint: {} };
 
@@ -37,15 +38,18 @@ test('uncertain or absent source-value choices never become naming suggestions',
 
 test('naming runs in the same route request with an explicit none option', async () => {
   let count = 0;
-  await routeRequest({ decide: async (state, questions) => {
+  const request = 'move into "price clips"';
+  const snapshot = workspaceSnapshot({ clips: [clip], folders: [] }, []);
+  const state = workspaceState(snapshot, { instruction: request, projectContext: '', session: { selection: [], previousResult: [], uncertain: [] } });
+  await workspaceRouteRequest({ decide: async (sentState, questions) => {
     count++;
-    assert.equal(state.instruction, 'move into "price clips"');
+    assert.equal(sentState.instruction, request);
     assert.equal(questions.destination_name.criteria.name_0, '"price clips"');
     assert.ok(questions.destination_name.criteria.none);
     assert.ok(questions.rename_suffix.criteria.none);
     assert.ok(questions.target_set);
     return {};
-  } }, 'move into "price clips"', [], 3);
+  } }, state, request, []);
   assert.equal(count, 1);
 });
 

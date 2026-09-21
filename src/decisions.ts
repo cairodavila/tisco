@@ -2,9 +2,10 @@ import { OpenRouter } from './openrouter.js';
 import { inFolder } from './workspace.js';
 import { namingCandidates } from './naming.js';
 import { admitted, after, all, always, never, questions, report, answerValue } from './gates.js';
-import { clipQuestion, clipState as wireClipState, EVIDENCE_SCOPE, evidenceState as wireEvidence, routeQuestion, routeState, stateFor, namingQuestions } from './jev.js';
+import { clipQuestion, folderRelationQuestions as wireFolderRelationQuestions, routeQuestion, namingQuestions, workspaceClipQuestion } from './jev.js';
 import type { Gate, QuestionReport, QuestionSpec } from './gates.js';
-import type { Answer, Answers, Decision, Evidence, Mode, Question, Rule, Unjudgeable } from './types.js';
+import type { Answer, Answers, Decision, Mode, Question, Rule, Unjudgeable } from './types.js';
+import type { WorkspaceSnapshot } from './workspace-state.js';
 
 export const MODES: Record<Mode, string> = {
   scripted: 'Prepared, audience-facing dialogue (at least one clean segment)',
@@ -71,6 +72,7 @@ export function clipSpecs(rule: Rule, options: ClipOptions): QuestionSpec[] {
   const specs: QuestionSpec[] = [
     spec('matches_request', 1, yesNo(filters && options.hasCriterion, filters ? 'the request states no content criterion' : off), ['instruction', 'project_context', 'current_video', 'unjudgeable'], ['clip.cleanest_take']),
     spec('has_scripted_segment', 1, yesNo(filters, off), ['project_context', 'current_video'], ['clip.cleanest_take']),
+    spec('has_incomplete_speech', 1, yesNo(filters, off), ['current_video'], []),
     spec('speech_kind', 1, yesNo(filters, off), ['current_video'], []),
     spec('speech_already_in_reference', 1, yesNo(filters && options.hasReference, 'no retained reference set was chosen'), ['current_video', 'reference_videos'], ['clip.duplicate_of']),
     spec('other_speech_not_in_reference', 1, yesNo(filters && options.hasReference, 'no retained reference set was chosen'), ['current_video', 'reference_videos'], []),
@@ -85,26 +87,14 @@ export function clipSpecs(rule: Rule, options: ClipOptions): QuestionSpec[] {
   return specs.map(item => ({ ...item, question: clipQuestion(item.id, item.id.startsWith('extra_') ? rule.extra[Number(item.id.slice(6))]?.text : undefined) }));
 }
 
-/** Tier-1 questions only: what is sent per clip in this release. */
-export function clipQuestions(rule: Rule): Record<string, Question> {
-  return questions(clipSpecs(rule, { hasCriterion: true, hasReference: true }).filter(spec => spec.tier === 1));
-}
-
 /** The exact ids this request would send for a clip; shown in gate reports and cache metadata. */
 export function clipQuestionIds(rule: Rule, options: ClipOptions): string[] {
   return admitted(clipSpecs(rule, options), {}).filter(spec => spec.tier === 1).map(spec => spec.id).sort((a, b) => a.localeCompare(b));
 }
 
-/** The wording is part of inference: changing it must invalidate old cached answers. */
-export function clipQuestionSignature(rule: Rule, options: ClipOptions): string {
-  return JSON.stringify(admitted(clipSpecs(rule, options), {}).filter(spec => spec.tier === 1).map(spec => ({ id: spec.id, question: spec.question })));
-}
-
-export async function routeRequest(client: OpenRouter, request: string, folders: string[], clipCount = 0): Promise<Answers> {
+export async function workspaceRouteRequest(client: OpenRouter, state: Record<string, unknown>, request: string, folders: string[]): Promise<Answers> {
   const asked = admitted(routeSpecs(folders), {});
-  return client.decide(stateFor(asked.flatMap(spec => spec.consumes), routeState(request, folders, clipCount)), {
-    ...questions(asked), ...namingQuestions(namingCandidates(request)),
-  });
+  return client.decide(state, { ...questions(asked), ...namingQuestions(namingCandidates(request)) });
 }
 
 /**
@@ -158,21 +148,6 @@ export function modeFromRoute(route: Answers, reference: string | null): Mode {
   return reference ? 'redundant' : 'custom';
 }
 
-/** Domain evidence, translated once into the shape the adapter sends. */
-export function evidenceState(item: Evidence): Record<string, unknown> {
-  const t = item.transcript;
-  return wireEvidence({
-    video: item.clip.path, prompt: t.prompt, status: t.status, timing: t.timing,
-    words: t.words.map(({ text, start, end }) => ({ text, start, end })), segments: t.segments, untimedText: t.text,
-  });
-}
-
-/** The state for one clip's admitted questions: only the keys those questions declare. */
-export function clipState(current: Evidence, references: Evidence[], rule: Rule, consumes: Iterable<string>): Record<string, unknown> {
-  const available = wireClipState(rule.request, rule.context, evidenceState(current), references.map(evidenceState), rule.unjudgeable?.length ? rule.unjudgeable : undefined);
-  return { ...stateFor(consumes, available), scope: EVIDENCE_SCOPE };
-}
-
 export function p(answers: Answers, key: string): number {
   const answer = answers[key];
   if (!answer || answer.type !== 'noul') throw new Error(`Missing Noul answer: ${key}`);
@@ -212,17 +187,79 @@ export function recommend(answers: Answers, rule: Rule): Pick<Decision, 'recomme
   return { recommendation: 'review', reason: `Evidence falls between ${no.toFixed(2)} and ${yes.toFixed(2)}; not auto-selected.` };
 }
 
-export async function analyzeClip(client: OpenRouter, current: Evidence, references: Evidence[], rule: Rule, options: Partial<ClipOptions> = {}): Promise<Decision> {
-  if (rule.reference && inFolder(current.clip.path, rule.reference)) throw new Error('A retained reference cannot also be a move target.');
-  if (rule.mode === 'redundant' && !references.length) throw new Error('Redundancy requires a complete retained reference set.');
-  const settings: ClipOptions = { hasCriterion: options.hasCriterion ?? true, hasReference: options.hasReference ?? references.length > 0 };
-  const specs = clipSpecs(rule, settings);
-  const asked = admitted(specs, {}).filter(spec => spec.tier === 1);
-  if (!asked.length) return { path: current.clip.path, answers: {}, recommendation: 'review', reason: 'No question applies; the request does not filter content.', skipped: report(specs, {}) };
-  const answers = await client.decide(clipState(current, references, rule, asked.flatMap(spec => spec.consumes)), questions(asked));
-  // Reports gates against this clip's own answers, so a tier-2 question explains
-  // itself as either "has_scripted_segment is no" or "not in this release".
-  return { path: current.clip.path, answers, ...recommend(answers, rule), skipped: report(specs, answers) };
+export interface WorkspaceQuestionEntry {
+  path: string;
+  videoId: string;
+  videoIndex: number;
+  specs: QuestionSpec[];
+}
+
+export interface WorkspaceQuestionBatch {
+  questions: Record<string, Question>;
+  entries: WorkspaceQuestionEntry[];
+}
+
+export function workspaceQuestionBatch(snapshot: WorkspaceSnapshot, paths: string[], rule: Rule, options: ClipOptions): WorkspaceQuestionBatch {
+  if (rule.reference && paths.some(path => inFolder(path, rule.reference!))) throw new Error('A retained reference cannot also be a move target.');
+  if (rule.mode === 'redundant' && (!rule.reference || !snapshot.videos.some(video => inFolder(video.path, rule.reference!)))) throw new Error('Redundancy requires a complete retained reference set.');
+  const wanted = new Set(paths);
+  const entries = snapshot.videos.flatMap((video, videoIndex): WorkspaceQuestionEntry[] => {
+    if (!wanted.has(video.path)) return [];
+    const specs = admitted(clipSpecs(rule, options), {}).filter(spec => spec.tier === 1);
+    return [{ path: video.path, videoId: video.id, videoIndex, specs }];
+  });
+  const found = new Set(entries.map(entry => entry.path));
+  const missing = paths.filter(path => !found.has(path));
+  if (missing.length) throw new Error(`Workspace state is missing selected clips: ${missing.join(', ')}`);
+  return {
+    entries,
+    questions: Object.fromEntries(entries.flatMap(entry => entry.specs.map(spec => [
+      `${entry.videoId}__${spec.id}`,
+      workspaceClipQuestion(spec.id, entry.videoIndex, spec.id.startsWith('extra_') ? rule.extra[Number(spec.id.slice(6))]?.text : undefined),
+    ]))),
+  };
+}
+
+export function workspaceDecisions(batch: WorkspaceQuestionBatch, answers: Answers, rule: Rule): Decision[] {
+  return batch.entries.map(entry => {
+    const local = Object.fromEntries(entry.specs.map(spec => {
+      const answer = answers[`${entry.videoId}__${spec.id}`];
+      if (!answer) throw new Error(`Missing workspace answer for ${entry.path}: ${spec.id}`);
+      return [spec.id, answer];
+    }));
+    return { path: entry.path, answers: local, ...recommend(local, rule), skipped: report(clipSpecs(rule, {
+      hasCriterion: entry.specs.some(spec => spec.id === 'matches_request'),
+      hasReference: entry.specs.some(spec => spec.id === 'speech_already_in_reference'),
+    }), local) };
+  });
+}
+
+export interface FolderRelationBatch {
+  folders: string[];
+  questions: Record<string, Question>;
+}
+
+export function folderRelationBatch(snapshot: WorkspaceSnapshot, selectedPaths: string[], candidates?: string[]): FolderRelationBatch {
+  const selected = new Set(selectedPaths);
+  const byId = new Map(snapshot.videos.map(video => [video.id, video.path]));
+  const available = snapshot.folders.filter(folder => folder.path !== '.' && folder.all_videos.length > 0)
+    .filter(folder => !folder.all_videos.every(id => selected.has(byId.get(id) ?? '')))
+    .map(folder => folder.path);
+  const folders = candidates ? candidates.filter(folder => available.includes(folder)) : available;
+  return { folders, questions: wireFolderRelationQuestions(folders) };
+}
+
+export function folderSuggestion(batch: FolderRelationBatch, answers: Answers, threshold = 0.8): { folder: string; choiceProbability: number; relationProbability: number } | undefined {
+  const choice = answers.destination_folder;
+  if (!choice || choice.type !== 'choice' || choice.choice === 'none') return undefined;
+  const match = /^folder_(\d+)$/.exec(choice.choice);
+  if (!match) return undefined;
+  const index = Number(match[1]);
+  const relation = answers[`folder_${index}_related`];
+  const choiceProbability = choice.probabilities[choice.choice] ?? 0;
+  const relationProbability = relation?.type === 'noul' ? relation.noul : 0;
+  const folder = batch.folders[index];
+  return folder && choiceProbability >= threshold && relationProbability >= threshold ? { folder, choiceProbability, relationProbability } : undefined;
 }
 
 export function answerLabel(answer: Answer): string {

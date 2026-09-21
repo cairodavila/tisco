@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { admitted, all, always, any, after, gateInputs, gateReason, gateSatisfied, never, questions, report } from '../dist/gates.js';
-import { analyzeClip, clipSpecs, modeFromRoute, referenceFromRoute, routeSpecs, scopeFromRoute } from '../dist/decisions.js';
+import { clipSpecs, modeFromRoute, referenceFromRoute, routeSpecs, scopeFromRoute, workspaceDecisions, workspaceQuestionBatch } from '../dist/decisions.js';
+import { workspaceSnapshot } from '../dist/workspace-state.js';
 
 const noul = (id, noul, gate = always, extra = {}) => ({ id, tier: extra.tier ?? 1, gate, question: { type: 'noul', instructions: id, criteria: { true: 'yes', false: 'no' } }, consumes: [], unlocks: [], ...extra });
 const choice = (id, options, gate = always) => ({ id, tier: 0, gate, question: { type: 'choice', instructions: id, criteria: Object.fromEntries(options.map(o => [o, o])) }, consumes: [], unlocks: [] });
@@ -68,10 +69,10 @@ test('route answers drive scope, reference and preset', () => {
 
 test('clip gates open only on the answers that unlock them', () => {
   const noReference = clipSpecs(rule(), { hasCriterion: true, hasReference: false });
-  assert.deepEqual(admitted(noReference, {}).filter(s => s.tier === 1).map(s => s.id), ['matches_request', 'has_scripted_segment', 'speech_kind']);
+  assert.deepEqual(admitted(noReference, {}).filter(s => s.tier === 1).map(s => s.id), ['matches_request', 'has_scripted_segment', 'has_incomplete_speech', 'speech_kind']);
   assert.match(report(noReference, {}).find(r => r.id === 'speech_already_in_reference').reason, /no retained reference set/);
   const withReference = clipSpecs(rule(), { hasCriterion: true, hasReference: true });
-  assert.deepEqual(admitted(withReference, {}).filter(s => s.tier === 1).map(s => s.id), ['matches_request', 'has_scripted_segment', 'speech_kind', 'speech_already_in_reference', 'other_speech_not_in_reference']);
+  assert.deepEqual(admitted(withReference, {}).filter(s => s.tier === 1).map(s => s.id), ['matches_request', 'has_scripted_segment', 'has_incomplete_speech', 'speech_kind', 'speech_already_in_reference', 'other_speech_not_in_reference']);
   const noCriterion = clipSpecs(rule(), { hasCriterion: false, hasReference: true });
   assert.deepEqual(admitted(noCriterion, {}).filter(s => s.tier === 1).map(s => s.id).includes('matches_request'), false);
 });
@@ -94,21 +95,22 @@ test('tier-2 questions unlock from tier-1 answers but stay off in this release',
 
 test('user questions are gated with the built-ins and never run on an unfiltered request', () => {
   const withExtras = clipSpecs(rule([{ text: 'Mentions the brand?', gate: 'yes' }, { text: 'Gibberish?', gate: 'no' }]), { hasCriterion: true, hasReference: false });
-  assert.deepEqual(admitted(withExtras, {}).filter(s => s.tier === 1).map(s => s.id), ['matches_request', 'has_scripted_segment', 'speech_kind', 'extra_0', 'extra_1']);
+  assert.deepEqual(admitted(withExtras, {}).filter(s => s.tier === 1).map(s => s.id), ['matches_request', 'has_scripted_segment', 'has_incomplete_speech', 'speech_kind', 'extra_0', 'extra_1']);
   assert.deepEqual(admitted(clipSpecs({ ...rule([{ text: 'x', gate: 'yes' }]), mode: 'all' }, { hasCriterion: true, hasReference: false }), {}), []);
 });
 
-test('analyzeClip sends only admitted questions, and only the state those questions read', async () => {
-  const sent = [];
-  const states = [];
-  const client = { decide: async (state, questions) => { sent.push(Object.keys(questions)); states.push(state); return { matches_request: { type: 'noul', noul: 0.9 }, has_scripted_segment: { type: 'noul', noul: 0.9 }, speech_kind: { type: 'choice', choice: 'actual_speech', probabilities: { actual_speech: 1 }, confidence: 1 } }; } };
-  const evidence = { clip: { path: 'A.MOV' }, transcript: { prompt: 'p', status: 'complete', timing: 'word', words: [], segments: [], text: '' } };
-  const decision = await analyzeClip(client, evidence, [], rule());
-  assert.deepEqual(sent[0], ['matches_request', 'has_scripted_segment', 'speech_kind']);
-  // No reference questions were admitted, so no reference state was sent: Jev degrades on
-  // context it does not need, and a bigger payload is a worse answer.
-  assert.deepEqual(Object.keys(states[0]).sort(), ['current_video', 'instruction', 'project_context', 'scope']);
-  assert.ok(!('reference_videos' in states[0]));
+test('workspace decisions separate prefixed answers back into one clip report', () => {
+  const clip = { path: 'A.MOV', fingerprint: { size: 1, mtimeMs: 1, ino: 1, dev: 1 } };
+  const transcript = { version: 1, model: 'stt', source: clip.fingerprint, prompt: 'p', timeUnit: 'ms', status: 'complete', timing: 'word', words: [], segments: [], text: '', durationMs: 1, cost: 0 };
+  const snapshot = workspaceSnapshot({ clips: [clip], folders: [] }, [{ clip, transcript }]);
+  const batch = workspaceQuestionBatch(snapshot, [clip.path], rule(), { hasCriterion: true, hasReference: false });
+  assert.deepEqual(Object.keys(batch.questions), ['video_0__matches_request', 'video_0__has_scripted_segment', 'video_0__has_incomplete_speech', 'video_0__speech_kind']);
+  const [decision] = workspaceDecisions(batch, {
+    video_0__matches_request: { type: 'noul', noul: 0.9 },
+    video_0__has_scripted_segment: { type: 'noul', noul: 0.9 },
+    video_0__has_incomplete_speech: { type: 'noul', noul: 0.1 },
+    video_0__speech_kind: { type: 'choice', choice: 'actual_speech', probabilities: { actual_speech: 1 }, confidence: 1 },
+  }, rule());
   assert.equal(decision.recommendation, 'propose');
   const skipped = decision.skipped.filter(r => r.state === 'skipped').map(r => r.id);
   assert.deepEqual(skipped.filter(id => id.startsWith('speech_already')), ['speech_already_in_reference']);
@@ -116,10 +118,9 @@ test('analyzeClip sends only admitted questions, and only the state those questi
   assert.ok(!skipped.includes('has_scripted_segment'));
 });
 
-test('analyzeClip makes no call when nothing is gated in', async () => {
-  const client = { decide: async () => { throw new Error('must not be called'); } };
-  const evidence = { clip: { path: 'A.MOV' }, transcript: { prompt: 'p', status: 'complete', timing: 'word', words: [], segments: [], text: '' } };
-  const decision = await analyzeClip(client, evidence, [], { ...rule(), mode: 'all' });
-  assert.equal(decision.recommendation, 'review');
-  assert.match(decision.reason, /does not filter content/);
+test('workspace decisions make no provider questions when nothing is gated in', () => {
+  const clip = { path: 'A.MOV', fingerprint: { size: 1, mtimeMs: 1, ino: 1, dev: 1 } };
+  const snapshot = workspaceSnapshot({ clips: [clip], folders: [] }, []);
+  const batch = workspaceQuestionBatch(snapshot, [clip.path], { ...rule(), mode: 'all' }, { hasCriterion: true, hasReference: false });
+  assert.deepEqual(batch.questions, {});
 });

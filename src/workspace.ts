@@ -18,7 +18,9 @@ export async function readJson(file: string): Promise<unknown> {
   const stat = await fs.lstat(file);
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Not a regular file: ${file}`);
   if (stat.size > 32 * 1024 * 1024) throw new Error(`JSON file is too large: ${file}`);
-  return JSON.parse(await fs.readFile(file, 'utf8')) as unknown;
+  const body = await fs.readFile(file, 'utf8');
+  try { return JSON.parse(body) as unknown; }
+  catch { throw new Error(`Invalid JSON file: ${file}`); }
 }
 
 export async function atomicJson(file: string, data: unknown): Promise<void> {
@@ -95,6 +97,7 @@ export async function fingerprint(file: string): Promise<Fingerprint> {
   return { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino, dev: stat.dev };
 }
 
+export interface WorkspaceInventory { clips: Clip[]; folders: string[] }
 export interface MoveEntry { from: string; to: string; fingerprint: Fingerprint }
 export interface Journal { version: 1; id: string; root: string; status: 'pending' | 'applied' | 'undone'; dirs: string[]; entries: MoveEntry[] }
 
@@ -147,22 +150,28 @@ export class Workspace {
     throw new Error('Lock owner is still running. Refusing to unlock.');
   }
 
-  async scan(): Promise<Clip[]> {
-    const result: Clip[] = [];
+  async inventory(): Promise<WorkspaceInventory> {
+    const clips: Clip[] = [];
+    const folders: string[] = [];
     const walk = async (relative: string) => {
       const dir = relative ? await this.resolve(relative) : this.root;
       for (const item of await fs.readdir(dir, { withFileTypes: true })) {
         if (item.name.startsWith('.') || item.name === 'node_modules' || /[\\\x00-\x1f\x7f:]/.test(item.name)) continue;
         const name = relative ? `${relative}/${item.name}` : item.name;
-        if (item.isDirectory()) await walk(name);
+        if (item.isDirectory()) { folders.push(name); await walk(name); }
         else if (item.isFile() && VIDEO_EXTENSIONS.has(path.extname(name).toLowerCase())) {
-          result.push({ path: name, fingerprint: await fingerprint(await this.resolve(name)) });
+          clips.push({ path: name, fingerprint: await fingerprint(await this.resolve(name)) });
         }
       }
     };
     await walk('');
-    return result.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
+    return {
+      clips: clips.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true })),
+      folders: folders.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+    };
   }
+
+  async scan(): Promise<Clip[]> { return (await this.inventory()).clips; }
 
   async verify(clip: Clip): Promise<void> {
     if (!sameFile(clip.fingerprint, await fingerprint(await this.resolve(clip.path)))) throw new Error(`Source changed; rescan before continuing: ${clip.path}`);
@@ -301,6 +310,8 @@ export class Workspace {
         const f = object(entry.fingerprint);
         if (!['size', 'mtimeMs', 'ino', 'dev'].every(k => typeof f[k] === 'number' && Number.isFinite(f[k]))) throw new Error('Invalid journal fingerprint.');
       }
+      // SAFETY: version, root, entries, status, id, dirs and every entry's from/to/fingerprint
+      // were shape-validated above, so the parsed object is a valid Journal; dirs is rebuilt here.
       result.push({ ...(value as unknown as Journal), dirs });
     }
     return result;

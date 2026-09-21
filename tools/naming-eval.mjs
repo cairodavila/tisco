@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { OpenRouter } from '../dist/openrouter.js';
-import { routeRequest, scopeFromRoute } from '../dist/decisions.js';
+import { scopeFromRoute, workspaceRouteRequest } from '../dist/decisions.js';
 import { chosenName, namingCandidates } from '../dist/naming.js';
+import { workspaceSnapshot, workspaceState } from '../dist/workspace-state.js';
 
 const client = new OpenRouter(process.env.OPENROUTER_API_KEY);
 const cases = [
@@ -19,7 +20,11 @@ const cases = [
 ];
 let failures = 0;
 for (const [request, folder, suffix, scope] of cases) {
-  const answers = await routeRequest(client, request, ['falas'], 19);
+  const folders = ['falas'];
+  const clip = { path: 'falas/A.MOV', fingerprint: { size: 1, mtimeMs: 1, ino: 1, dev: 1 } };
+  const snapshot = workspaceSnapshot({ clips: [clip], folders }, []);
+  const state = workspaceState(snapshot, { instruction: request, projectContext: '', session: { selection: [], previousResult: [], uncertain: [] } });
+  const answers = await workspaceRouteRequest(client, state, request, folders);
   const candidates = namingCandidates(request);
   const actual = { folder: chosenName(answers, 'destination_name', candidates), suffix: chosenName(answers, 'rename_suffix', candidates), scope: scopeFromRoute(answers) };
   try { assert.deepEqual(actual, { folder, suffix, scope }); }

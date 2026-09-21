@@ -36,24 +36,39 @@ globalThis.fetch = async (url, init) => {
     // unclear band, where a row is offered but a blanket Enter must not take it.
     matches_request: text.includes('nothing matches') ? 0.03 : text.includes('broader match') ? 0.95 : scripted ? 0.93 : unclear ? 0.50 : 0.07,
     has_scripted_segment: scripted ? 0.95 : unclear ? 0.45 : 0.05,
+    has_incomplete_speech: unclear ? 0.9 : 0.05,
     speech_already_in_reference: 0.05,
     other_speech_not_in_reference: quiet ? 0.03 : 0.93,
   };
   const answers = {};
   for (const [id, question] of Object.entries(request.questions)) {
+    const baseId = id.includes('__') ? id.slice(id.indexOf('__') + 2) : id;
+    const videoIndex = Number(question.instructions.match(/workspace\.videos\[(\d+)\]/)?.[1]);
+    const judgedVideo = Number.isInteger(videoIndex) ? request.state?.workspace?.videos?.[videoIndex]?.path ?? '' : video;
+    const judgedScripted = judgedVideo.includes('01-intro');
+    const judgedUnclear = judgedVideo.includes('02-setup');
+    const judgedQuiet = judgedVideo.includes('03-detail');
+    const clipNouls = {
+      matches_request: text.includes('nothing matches') ? 0.03 : text.includes('broader match') ? 0.95 : judgedScripted ? 0.93 : judgedUnclear ? 0.50 : 0.07,
+      has_scripted_segment: judgedScripted ? 0.95 : judgedUnclear ? 0.45 : 0.05,
+      has_incomplete_speech: judgedUnclear ? 0.9 : 0.05,
+      speech_already_in_reference: 0.05,
+      other_speech_not_in_reference: judgedQuiet ? 0.03 : 0.93,
+    };
     if (question.type === 'noul') {
-      answers[id] = { type: 'noul', noul: nouls[id] ?? 0.91 };
+      answers[id] = { type: 'noul', noul: baseId.startsWith('folder_') && baseId.endsWith('_related') ? 0.05 : clipNouls[baseId] ?? nouls[baseId] ?? 0.91 };
       continue;
     }
     const options = Object.keys(question.criteria);
     const folder = text.match(/(?:into|in|called|to)\s+(?:"([^"]+)"|(\S+))/);
     const suffix = text.match(/with\s+(_\w+)/)?.[1];
     const nameChoice = value => options.find(option => question.criteria[option] === JSON.stringify(value)) ?? 'none';
-    const choice = id === 'destination_name' ? nameChoice(folder?.[1] ?? folder?.[2])
+    const literalFolder = nameChoice(folder?.[1] ?? folder?.[2]);
+    const choice = id === 'destination_name' ? (literalFolder !== 'none' ? literalFolder : options.filter(option => option.startsWith('name_')).at(-1) ?? 'none')
       : id === 'rename_suffix' ? nameChoice(suffix)
       : id === 'target_set' ? (/results|those/.test(text) ? 'previous_result' : /selected/.test(text) ? 'current_selection' : /subfolders/.test(text) ? 'include_subfolders' : 'all_here')
-      : id === 'reference_set' ? 'none'
-      : id === 'speech_kind' ? (scripted ? 'actual_speech' : quiet ? 'no_transcribed_speech' : 'on_set')
+      : id === 'reference_set' || id === 'destination_folder' ? 'none'
+      : baseId === 'speech_kind' ? (judgedScripted ? 'actual_speech' : judgedQuiet ? 'no_transcribed_speech' : 'on_set')
       : options[0];
     if (!options.includes(choice)) throw new Error(`Unexpected demo question: ${id}`);
     const rest = options.filter(option => option !== choice);

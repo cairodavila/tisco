@@ -5,7 +5,8 @@ import type { Answers, Question } from './types.js';
 export const STT_MODEL = 'microsoft/mai-transcribe-2';
 export const JEV_MODEL = 'typesafe/jev-1.13';
 const ORIGIN = 'https://openrouter.ai';
-export const MAX_DECISION_BYTES = 55_000;
+export const MAX_STATE_BYTES = 96_000;
+export const MAX_DECISION_BYTES = 180_000;
 
 export class OpenRouter {
   constructor(private key: string, private fetcher: typeof fetch = fetch) {
@@ -58,8 +59,8 @@ export class OpenRouter {
 
   async decide(state: unknown, questions: Record<string, Question>): Promise<Answers> {
     const request = { model: JEV_MODEL, state, questions };
-    if (Buffer.byteLength(JSON.stringify(request)) > MAX_DECISION_BYTES) {
-      throw new Error(`Context exceeds tisco's ${MAX_DECISION_BYTES.toLocaleString()}-byte guard. Narrow context or selected clips; nothing was truncated.`);
+    if (Buffer.byteLength(JSON.stringify(state)) > MAX_STATE_BYTES || Buffer.byteLength(JSON.stringify(request)) > MAX_DECISION_BYTES) {
+      throw new Error(`Context exceeds tisco's Jev guard. Split the workspace state; nothing was truncated.`);
     }
     const result = await this.post('/api/alpha/decisions', request);
     const raw = object(result.answers);

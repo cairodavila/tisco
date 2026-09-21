@@ -203,11 +203,11 @@ with tempfile.TemporaryDirectory(prefix='tisco-tui-') as base:
 
         calls = [json.loads(line) for line in log_path.read_text().splitlines()]
         assert all(call['model'] == 'typesafe/jev-1.13' for call in calls)
-        assert len(calls) == 12, len(calls)
+        assert len(calls) == 9, len(calls)
         instruction = lambda call: call['state']['instruction']
         routes = [call for call in calls if 'target_set' in call['questions']]
-        clips = [call for call in calls if 'current_video' in call['state']]
-        assert len(routes) == 6 and len(clips) == 6, (len(routes), len(clips))
+        clips = [call for call in calls if any('__matches_request' in question for question in call['questions'])]
+        assert len(routes) == 6 and len(clips) == 3, (len(routes), len(clips))
 
         first = routes[0]['questions']
         for question in ['ops_find', 'ops_create', 'ops_move', 'ops_rename', 'criterion_requested', 'target_set']:
@@ -217,9 +217,13 @@ with tempfile.TemporaryDirectory(prefix='tisco-tui-') as base:
         # instead of adding a second network round trip.
         for question in ['spoken_content_decides', 'needs_picture', 'needs_sound', 'needs_measurement', 'needs_external_record']:
             assert question in first, question
-        # Only gate-admitted questions reach a clip.
+        # Every admitted per-clip question shares one workspace state and keeps its clip prefix.
         for call in [call for call in clips if instruction(call).startswith('find the prepared takes')]:
-            assert sorted(call['questions']) == ['has_scripted_segment', 'matches_request', 'speech_kind'], sorted(call['questions'])
+            asked = {question.split('__', 1)[1] for question in call['questions']}
+            assert asked == {'has_incomplete_speech', 'has_scripted_segment', 'matches_request', 'speech_kind'}, asked
+            assert 'workspace' in call['state'] and 'current_video' not in call['state']
+            assert call['state']['evidence_coverage']['complete'] is True
+            assert all(video['transcript']['status'] == 'complete' for video in call['state']['workspace']['videos'])
         # The reference gate follows the folders that exist, in both directions.
         has_reference = lambda call: 'reference_set' in call['questions']
         assert not has_reference(routes[0]) and has_reference(routes[1]), 'the reference gate opens once falas/ exists'
@@ -227,10 +231,10 @@ with tempfile.TemporaryDirectory(prefix='tisco-tui-') as base:
         assert len([call for call in routes if 'create a folder called drafts' in instruction(call)]) == 1
         # A refused request is judged on nothing at all, and route itself takes one call.
         refused = [call for call in calls if instruction(call).endswith('smiling into selects')]
-        assert len(refused) == 1 and not any('current_video' in call['state'] for call in refused), 'a refused request judges no clip'
-        # A mixed request is judged on what was said, and carries every set-aside part.
+        assert len(refused) == 1 and not any(any('__' in question for question in call['questions']) for call in refused), 'a refused request judges no clip'
+        # A mixed request is judged on what was said, with all clips batched against one state.
         mixed = [call for call in clips if 'clean audio' in instruction(call)]
-        assert len(mixed) == 3 and all(call['state']['unjudgeable'] == ['sound'] for call in mixed), 'the set-aside part travels with the evidence'
+        assert len(mixed) == 1 and mixed[0]['state']['unjudgeable'] == ['sound'], 'the set-aside part travels with the evidence'
         assert all('unjudgeable' not in call['state'] for call in clips if 'clean audio' not in instruction(call)), 'a plain request carries no limitation'
         assert not (root / '.tisco/lock.json').exists()
         assert 'test-never-real' not in terminal.output
