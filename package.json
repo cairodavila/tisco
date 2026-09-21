@@ -1,5 +1,5 @@
 {
-  "name": "tisco",
+  "name": "@ailia/tisco",
   "version": "0.3.0",
   "description": "Question video transcripts, inspect the evidence, and organize clips from the terminal.",
   "author": "koik",

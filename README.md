@@ -28,7 +28,7 @@ findings are not file operations. tisco shows what matched first, keeps uncertai
 requires Node 22.13 or newer.
 
 ```sh
-npm install -g tisco
+npm install -g @ailia/tisco
 tisco --check
 tisco ~/shoot
 ```
