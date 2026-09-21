@@ -1,0 +1,55 @@
+{
+  "name": "tisco",
+  "version": "0.3.0",
+  "description": "Question video transcripts, inspect the evidence, and organize clips from the terminal.",
+  "author": "koik",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cairodavila/tisco.git"
+  },
+  "homepage": "https://github.com/cairodavila/tisco#readme",
+  "bugs": {
+    "url": "https://github.com/cairodavila/tisco/issues"
+  },
+  "type": "module",
+  "bin": {
+    "tisco": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test test/*.test.mjs",
+    "test:tui": "tsc && python3 test/tui-smoke.py",
+    "demo": "tsc && node test/demo.mjs",
+    "start": "node dist/cli.js",
+    "prepack": "tsc",
+    "eval:wording": "tsc && node tools/wording-eval.mjs",
+    "eval:naming": "tsc && node tools/naming-eval.mjs"
+  },
+  "license": "MIT",
+  "keywords": [
+    "cli",
+    "tui",
+    "video",
+    "transcription",
+    "openrouter",
+    "jev",
+    "video-editing",
+    "media-management"
+  ],
+  "dependencies": {
+    "@clack/prompts": "^1.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1",
+    "typescript": "^7.0.2"
+  }
+}
